@@ -1,6 +1,4 @@
 /bootloader/bin/cryptsetup
-/data
-/*.bin
 
 /result
 /result-*
