@@ -6,12 +6,16 @@ pkgs.buildFHSEnv {
 
   targetPkgs = ps: with ps; [
     systemd
+    xfce.xfce4-session
+    xfce.xfce4-panel
     xfce.xfwm4
+    xfce.xfce4-settings
+    xfce.xfce4-terminal
     lightdm-gtk-greeter
     bashInteractive
     coreutils
     neofetch
-    firefox
+    # firefox # love exit code 137
   ];
 
   extraCommands = ''
