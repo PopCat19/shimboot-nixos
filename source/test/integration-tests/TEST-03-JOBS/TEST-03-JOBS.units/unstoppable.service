@@ -1,6 +1,0 @@
-# SPDX-License-Identifier: LGPL-2.1-or-later
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/bin/echo "I'm unstoppable!"
-ExecStop=/bin/systemctl start --no-block unstoppable.service

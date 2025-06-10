@@ -1,3 +1,0 @@
-[Unit]
-After=fdstore-pin.service fdstore-nopin.service
-Wants=fdstore-pin.service fdstore-nopin.service
