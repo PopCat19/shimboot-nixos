@@ -1,26 +1,34 @@
 # ./nix/rootfs.nix
 { pkgs, drivers }:
 
-pkgs.buildFHSEnv {
+pkgs.buildEnv {
   name = "shimboot-nixos-fhs-rootfs";
 
-  targetPkgs = ps: with ps; [
+  # A list of packages whose contents will be merged together
+  # into a single FHS-style directory structure.
+  paths = with pkgs; [
+    # The core system, with our patch
     systemd
+
+    # The essential XFCE desktop components
     xfce.xfce4-session
     xfce.xfce4-panel
     xfce.xfwm4
     xfce.xfce4-settings
     xfce.xfce4-terminal
+
+    # The login manager to start the graphical session
     lightdm-gtk-greeter
+
+    # Basic command-line tools
     bashInteractive
     coreutils
     neofetch
-    # firefox # love exit code 137
+
+    # Our custom package containing the Chromebook-specific drivers
+    drivers
   ];
 
-  extraCommands = ''
-    cp -r --no-preserve=ownership ${drivers}/lib/* $out/lib/
-    mkdir -p $out/etc/modules-load.d
-    echo "tun" > $out/etc/modules-load.d/tun.conf
-  '';
+  # We can add extra files here if needed, but for now, let's keep it simple.
+  # The 'paths' option handles merging everything automatically.
 }

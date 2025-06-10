@@ -19,7 +19,7 @@
 
       # The path to the official shim image you downloaded.
       # You'll need to create this data directory and put the file there.
-      shimFile = ./data/shim_board_name.bin;
+      shimFile = ./data/shim.bin;
 
     in {
       # The packages this flake provides.

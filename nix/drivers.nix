@@ -6,7 +6,7 @@ pkgs.stdenv.mkDerivation {
   src = shimFile;
 
   # Tools needed to perform the extraction.
-  nativeBuildInputs = [ pkgs.cgpt pkgs.e2fsprogs ];
+  nativeBuildInputs = [ pkgs.vboot_reference pkgs.e2fsprogs ];
 
   # This derivation cannot be built in the normal Nix sandbox because it
   # needs to create loop devices and mount filesystems.
