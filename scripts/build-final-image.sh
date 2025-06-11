@@ -32,7 +32,7 @@ command -v binwalk >/dev/null || { echo "binwalk not found."; exit 1; }
 
 # --- Step 1: The Pure Build ---
 print_info "Building the pure NixOS rootfs..."
-nix build "$PROJECT_ROOT#rootfs"
+nix build "$PROJECT_ROOT#rootfs" --extra-experimental-features "nix-command flakes"
 print_info "Rootfs build complete. Output is at $ROOTFS_DIR"
 
 # --- Step 2: The Impure Harvest ---
@@ -50,13 +50,21 @@ dd if="$SHIM_FILE" of="$KERNEL_FILE" bs=512 skip="$part_start" count="$part_size
 # Harvest the Spark (initramfs)
 print_info "Extracting initramfs from kernel..."
 # Stage 1: Decompress the kernel's gzip stream
-offset=$(grep '"offset"' <(binwalk -y gzip -l /dev/stdout "$KERNEL_FILE") | awk -F': ' '{print $2}' | sed 's/,//')
-dd if="$KERNEL_FILE" bs=1 skip="$offset" | zcat > "$TMP_DIR/decompressed_kernel.bin"
+tmp_log_1=$(mktemp)
+binwalk -y gzip -l "$tmp_log_1" "$KERNEL_FILE"
+offset=$(grep '"offset"' "$tmp_log_1" | awk -F': ' '{print $2}' | sed 's/,//')
+rm "$tmp_log_1"
+# Apply the balm to zcat
+dd if="$KERNEL_FILE" bs=1 skip="$offset" | zcat > "$TMP_DIR/decompressed_kernel.bin" || true
 
 # Stage 2: Find and extract the XZ-compressed cpio archive
-xz_offset=$(binwalk -l /dev/stdout "$TMP_DIR/decompressed_kernel.bin" | jq '.[0].Analysis.file_map[] | select(.description | contains("XZ compressed data")) | .offset')
+tmp_log_2=$(mktemp)
+binwalk -l "$tmp_log_2" "$TMP_DIR/decompressed_kernel.bin"
+xz_offset=$(cat "$tmp_log_2" | jq '.[0].Analysis.file_map[] | select(.description | contains("XZ compressed data")) | .offset')
+rm "$tmp_log_2"
 mkdir -p "$TMP_DIR/initramfs_extracted"
-dd if="$TMP_DIR/decompressed_kernel.bin" bs=1 skip="$xz_offset" | xz -d | cpio -id -D "$TMP_DIR/initramfs_extracted"
+# Apply the balm to cpio
+dd if="$TMP_DIR/decompressed_kernel.bin" bs=1 skip="$xz_offset" | xz -d | cpio -id -D "$TMP_DIR/initramfs_extracted" || true
 
 # Patch the Spark
 print_info "Patching initramfs with shimboot bootloader..."
