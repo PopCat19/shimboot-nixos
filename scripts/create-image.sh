@@ -52,7 +52,7 @@ create_partitions() {
   # We also copy the kernel data into the KERN-A partition.
   dd if="$kernel_path" of="${image_loop}p2" bs=1M oflag=sync
   mkfs.ext2 -L BOOT "${image_loop}p3"
-  mkfs.ext4 -L ROOTFS "${image_loop}p4"
+  mkfs.ext4 -L ROOTFS -O ^metadata_csum,^64bit "${image_loop}p4"
 }
 
 populate_partitions() {
