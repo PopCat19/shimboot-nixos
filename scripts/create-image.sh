@@ -72,7 +72,7 @@ populate_partitions() {
   mkdir -p "$rootfs_mount"
   mount "${image_loop}p4" "$rootfs_mount"
   print_info "Copying rootfs... (this may take a moment)"
-  cp -ar "$rootfs_dir"/* "$rootfs_mount"
+  cp -ar "$rootfs_dir"/. "$rootfs_mount"/
   umount "$rootfs_mount"
 }
 

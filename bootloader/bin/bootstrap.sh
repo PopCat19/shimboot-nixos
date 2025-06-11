@@ -285,7 +285,7 @@ exec_init() {
       exec /bin/sh < "$TTY1" >> "$TTY1" 2>&1
     fi
   else
-    exec /sbin/init < "$TTY1" >> "$TTY1" 2>&1
+    exec /lib/systemd/systemd --system --log-level=debug --log-target=kmsg --show-status=yes < "$TTY1" >> "$TTY1" 2>&1
   fi
 }
 
