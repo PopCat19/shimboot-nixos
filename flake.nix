@@ -8,36 +8,41 @@
 
   outputs = { self, nixpkgs }:
     let
-      # We'll build for x86_64 Linux.
       system = "x86_64-linux";
-
-      # Apply our systemd patch overlay.
       pkgs = import nixpkgs {
         inherit system;
         overlays = [ (import ./nix/overlay.nix) ];
       };
 
-      # The path to the official shim image you downloaded.
-      # You'll need to create this data directory and put the file there.
-      shimFile = ./data/shim.bin;
-
-    in {
-      # The packages this flake provides.
-      packages.${system} = {
-        # The main build artifact: our FHS-compliant rootfs.
-        default = self.packages.${system}.rootfs;
-
-        # The rootfs itself.
-        rootfs = import ./nix/rootfs.nix {
-          inherit pkgs;
-          # Pass our custom drivers package to the rootfs builder.
-          drivers = self.packages.${system}.drivers;
+      # We define our drivers as a fixed-output derivation.
+      # This is the pure and correct way to handle the pre-extracted drivers.
+      drivers = pkgs.stdenv.mkDerivation {
+        name = "chromebook-drivers";
+        
+        # We lie to fetchurl. The URL is irrelevant. The HASH is everything.
+        # Nix will check its store for something with this hash. If it doesn't
+        # find it, it will fail. It will NOT try to download from the fake URL.
+        src = pkgs.fetchurl {
+          url = "file:///tmp/extracted-drivers.tar.gz"; # A lie. This path is never used.
+          # This is your sacred hash. The cryptographic promise.
+          sha256 = "sha256-yK1bsMLx82RTroRyPsol0d6YRZDmsmWRF4dcG3NlqHU=";
         };
 
-        # The custom drivers package, exposed for debugging.
-        drivers = import ./nix/drivers.nix {
+        # The install phase simply copies the contents of the source
+        # (which Nix provides from the store path matching the hash)
+        # into the output directory.
+        installPhase = ''
+          mkdir -p $out
+          cp -r ./* $out/
+        '';
+      };
+
+    in {
+      packages.${system} = {
+        default = self.packages.${system}.rootfs;
+        rootfs = import ./nix/rootfs.nix {
           inherit pkgs;
-          inherit shimFile;
+          inherit drivers;
         };
       };
     };
