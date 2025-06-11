@@ -10,30 +10,26 @@ This is a learning project for me. I'm still new to Nix, so I'm relying on docum
 *   **Atomic Builds:** Builds either succeed completely or fail cleanly, without leaving a half-broken system or temporary files everywhere.
 *   **Declarative Dependencies:** Instead of scripts calling other scripts, Nix tracks the entire dependency graph, making the process easier to understand and maintain.
 
-### Project Roadmap & Status (initial roadmap devised with assistance from LLMs; subject to change)
--   [x] **Project Scaffolding:** The project is now a Nix flake. The old scripts have been archived for reference, and declarative logic lives in the `nix/` directory.
--   [x] **Patched `systemd`:** The `mount_nofollow` patch was the first big hurdle. The original patch from [ading2210/chromeos-systemd](https://github.com/ading2210/chromeos-systemd) didn't work on latest `systemd`, so I had to create a new diff with the [systemd repo](https://github.com/systemd/systemd). This is now applied automatically via a [Nix overlay](nix/overlay.nix).
--   [x] **Binary Cache:** To avoid long compile times, I've set up a [Cachix cache](https://app.cachix.org/cache/shimboot-systemd-nixos). This hosts the patched `systemd` and other dependencies. I haven't fully tested it with others yet, but it should work.
-    -   **Cache URL:** `https://shimboot-systemd-nixos.cachix.org`
-    -   **Public Key:** `shimboot-systemd-nixos.cachix.org-1:vCWmEtJq7hA2UOLN0s3njnGs9/EuX06kD7qOJMo2kAA=`
--   [ ] **FHS Rootfs Generation:**
-    -   **Status:** In Progress.
-    -   **Details:** I'm trying to use `buildFHSEnv` to create a rootfs directory that looks like a standard Linux system. While the initial builds succeeded, the output isn't a directory structure like `/bin`, `/etc`, etc. I'm skeptical if is the right tool, so the next step is to investigate the output and possibly try a tool like `buildEnv` that just produces a directory.
--   [ ] **Kernel & Initramfs Extraction:**
-    -   **Status:** Not Started (in Nix).
-    -   **Details:** I've manually extracted the `kernel.bin` from the shim (currently data/kernel.bin), but the goal is to have a Nix derivation do this automatically and reliably. The `initramfs` extraction is also a challenge due to my current unfamiliarity with the existing shimboot scripts.
--   [ ] **Final Image Assembly:**
-    -   **Status:** Not Started.
-    -   **Details:** A simplified (untested) `create-image.sh` script exists, but it's waiting for the declarative artifacts (rootfs, kernel, initramfs) to be ready.
+### Project Roadmap & Status
+-   [x] **Project Scaffolding:** The project is now a Nix flake.
+-   [x] **Patched `systemd`:** The `mount_nofollow` patch is working and applied via a Nix overlay.
+-   [x] **Binary Cache:** A [Cachix cache](https://app.cachix.org/cache/shimboot-systemd-nixos) is live and hosts the patched `systemd`.
+-   [x] **FHS Rootfs Generation:** The `rootfs` is now successfully built using `buildEnv`, creating a proper FHS directory structure.
+-   [x] **Final Image Assembly:** The `build-final-image.sh` script successfully automates the entire build and assembly process.
+-   [?] **Testing on Hardware:**
+    -   **Status:** **First Boot (on bootloader)**
+    -   **Details:** The generated `shimboot_nixos.bin` image successfully boots on a `dedede` device. The shim bootloader starts, and the kernel loads.
+    -   **Current Issue:** The boot process timed-out while `Looking for rootfs using kern_guid`. This indicates that our patched `initramfs` is not being executed, and the system is falling back to the original ChromeOS boot logic. The next step is to debug the `initramfs` patching process to be sure our custom `init` script correctly replaces the original one.
+-   [ ] **Declarative Artifacts (Future Goal):** The manual extraction and patching steps in `build-final-image.sh` should eventually be moved into pure, hashed Nix derivations.
 
 ### How to Build (Current WIP State)
 **This isn't ready for general use!** These instructions are for developers who want to follow along.
-1.  **Prerequisites:** You need a working Nix installation with flakes enabled.
+1.  **Prerequisites:** A working Nix installation with flakes enabled, and necessary build tools (`vboot_utils`, `binwalk`, etc.) installed system-wide.
 2.  **Clone this repo** (specifically the `nixos` branch).
-3.  **Get the Shim:** Download the [official RMA shim](https://chrome100.dev/) for your board (I'm using `dedede`), then rename and place it at `./data/shim.bin`. (bin may already exist; it's a `dedede` shim. replace if needed)
-4.  **Build the Rootfs:** Run `nix build .#` in `shimboot-nixos`. This should succeed (using the cache) and create a `./result` symlink. **Note that this `result` is currently not the final rootfs directory.**
+3.  **Get the Shim:** Download the official RMA shim for your board and place it at `./data/shim.bin`.
+4.  **Build the Image:** Run `sudo ./scripts/build-final-image.sh`. This will build all components and create `shimboot_nixos.bin`.
 
 ### Project Credits
-[**ading2210**](https://github.com/ading2210) for the shimboot project and its derivatives: [ading2210/shimboot](https://github.com/ading2210/shimboot) / [ading2210/chromeos-systemd](https://github.com/ading2210/chromeos-systemd)
-Feedback and assistance from those participating in [NixOS shimboot with systemd patches #335](https://github.com/ading2210/shimboot/discussions/335) discussion.
-[**t3.chat**](https://t3.chat/) for providing useful LLMs for guidance.
+- [**ading2210**](https://github.com/ading2210) for the shimboot project and its derivatives.
+- Feedback and assistance from those participating in the [original discussion](https://github.com/ading2210/shimboot/discussions/335).
+- [**t3.chat**](https://t3.chat/) for providing useful LLMs for guidance.
