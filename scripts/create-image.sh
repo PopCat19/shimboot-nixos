@@ -21,50 +21,36 @@ create_loop() {
   echo "$loop_device"
 }
 
-make_bootable() {
-  cgpt add -i 2 -S 1 -T 5 -P 10 -l kernel "$1"
-}
-
 partition_disk() {
   local image_path="$1"
-  local bootloader_size="$2"
-  local rootfs_name="$3"
-  # Create partition table with fdisk
+  local bootloader_size_mb="$2"
+
+  # Step 1: Use fdisk to create the partition geometry. It's good at this.
   (
     echo g # new gpt disk label
-    echo n # new partition 1 (stateful)
-    echo
-    echo
-    echo +1M
-    echo n # new partition 2 (kernel)
-    echo
-    echo
-    echo +32M
-    echo t # change partition type
-    echo 2
-    echo FE3A2A5D-4F32-41A7-B725-ACCC3285A309 # chromeos kernel
-    echo n # new partition 3 (bootloader)
-    echo
-    echo
-    echo "+${bootloader_size}M"
-    echo t # change partition type
-    echo 3
-    echo 3CB8E202-3B7E-47DD-8A3C-7FF2A13CFCEC # chromeos rootfs
-    echo n # new partition 4 (rootfs)
-    echo
-    echo
-    echo
+    echo n; echo; echo; echo +1M;      # Partition 1 (STATE)
+    echo n; echo; echo; echo +32M;      # Partition 2 (KERN-A)
+    echo n; echo; echo; echo "+${bootloader_size_mb}M"; # Partition 3 (BOOT)
+    echo n; echo; echo; echo;          # Partition 4 (ROOTFS)
     echo w # write changes
   ) | fdisk "$image_path" > /dev/null
+
+  # Step 2: Use cgpt to set the correct types, labels, and attributes.
+  # It is good at this. We are modifying existing partitions, not creating new ones.
+  cgpt add -i 1 -t data -l "STATE" "$image_path"
+  cgpt add -i 2 -t kernel -l "kernel" -S 1 -T 5 -P 10 "$image_path"
+  cgpt add -i 3 -t rootfs -l "BOOT" "$image_path"
+  cgpt add -i 4 -t data -l "shimboot_rootfs:nixos" "$image_path"
 }
 
 create_partitions() {
   local image_loop="$1"
   local kernel_path="$2"
 
+  # The partitions are already created. We just format them.
   mkfs.ext4 -L STATE "${image_loop}p1"
+  # We also copy the kernel data into the KERN-A partition.
   dd if="$kernel_path" of="${image_loop}p2" bs=1M oflag=sync
-  make_bootable "$image_loop"
   mkfs.ext2 -L BOOT "${image_loop}p3"
   mkfs.ext4 -L ROOTFS "${image_loop}p4"
 }

@@ -17,9 +17,10 @@ This is a learning project for me. I'm still new to Nix, so I'm relying on docum
 -   [x] **FHS Rootfs Generation:** The `rootfs` is now successfully built using `buildEnv`, creating a proper FHS directory structure.
 -   [x] **Final Image Assembly:** The `build-final-image.sh` script successfully automates the entire build and assembly process.
 -   [?] **Testing on Hardware:**
-    -   **Status:** **First Boot (on bootloader)**
-    -   **Details:** The generated `shimboot_nixos.bin` image successfully boots on a `dedede` device. The shim bootloader starts, and the kernel loads.
-    -   **Current Issue:** The boot process timed-out while `Looking for rootfs using kern_guid`. This indicates that our patched `initramfs` is not being executed, and the system is falling back to the original ChromeOS boot logic. The next step is to debug the `initramfs` patching process to be sure our custom `init` script correctly replaces the original one.
+    -   **Status:** **shimboot menu boots**
+    -   **Details:** The generated `shimboot_nixos.bin` image successfully boots on a `dedede` device. The custom `initramfs` runs and the `Shimboot OS Selector` correctly identifies the `nixos on /dev/sda4` partition (as shown in the menu; option 3).
+    -   **Current Issue:** Selecting the `nixos` option results in a black screen and a reboot (likely a kernel panic). This presumably happens when the bootloader tries to `pivot_root` and execute `systemd` on our new rootfs. This strongly suggests an incompatibility between the ChromeOS kernel and our patched `systemd` or the FHS environment we've built.
+    -   **Next Steps:** Debug the handover process. This will likely involve modifying the `init` script in the `bootloader` directory to get more information before the crash (e.g., adding a `sleep` delay, trying to dump `dmesg` to a file on the partition, or attempting to `chroot` manually from the debug shell).
 -   [ ] **Declarative Artifacts (Future Goal):** The manual extraction and patching steps in `build-final-image.sh` should eventually be moved into pure, hashed Nix derivations.
 
 ### How to Build (Current WIP State)

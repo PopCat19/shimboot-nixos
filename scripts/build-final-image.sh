@@ -68,7 +68,22 @@ dd if="$TMP_DIR/decompressed_kernel.bin" bs=1 skip="$xz_offset" | xz -d | cpio -
 
 # Patch the Spark
 print_info "Patching initramfs with shimboot bootloader..."
+
+# Define the path to the original init script
+original_init="$TMP_DIR/initramfs_extracted/init"
+
+# Copy our bootloader files into the initramfs.
+# Our bootstrap.sh will now live at /bin/bootstrap.sh
 cp -rT "$BOOTLOADER_DIR" "$TMP_DIR/initramfs_extracted/"
+
+# Now, perform the hijack.
+# We will append a command to the VERY END of the original init script.
+# This command will execute our bootstrap script, taking over the boot process.
+# The 'exec' ensures that it replaces the current process entirely.
+echo 'exec /bin/bootstrap.sh' >> "$original_init"
+
+# Finally, ensure all our new scripts are executable.
+find "$TMP_DIR/initramfs_extracted/bin" -type f -exec chmod +x {} \;
 
 # --- Step 3: The Final Assembly ---
 print_info "Assembling the final disk image..."
