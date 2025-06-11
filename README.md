@@ -17,23 +17,10 @@ This is a learning project for me. I'm still new to Nix, so I'm relying on docum
 -   [x] **FHS Rootfs Generation:** The `rootfs` is now successfully built using `buildEnv`, creating a proper FHS directory structure.
 -   [x] **Final Image Assembly:** The `build-final-image.sh` script successfully automates the entire build and assembly process.
 -   [?] **Testing on Hardware:**
-        -   **Status:** **shimboot menu boots**
-        -   **Details:** The generated `shimboot_nixos.bin` image successfully
-            boots on a `dedede` device. The custom `initramfs` runs and the
-            `Shimboot OS Selector` correctly identifies the
-            `nixos on /dev/sda4` partition.
-        -   **Current Issue:** Selecting the `nixos` option results in a black
-            screen and a reboot (likely a kernel panic). The root cause was
-            identified: the `rootfs` was built with symlinks pointing to
-            `/nix/store` paths that don't exist within the `rootfs` itself.
-            The `init` process fails because it cannot find essential
-            binaries like `/sbin/init`.
-        -   **Next Steps:** Re-evaluate the `rootfs` creation process. The
-            current plan is to abandon the symlink-based `buildEnv` approach
-            and instead construct a `rootfs` that contains the actual files
-            from the Nix store, not just pointers to them. This will likely
-            involve using a different Nix function or manually copying store
-            paths into the image during the build process.
+ -   **Status:** **shimboot menu boots**
+ -   **Details:** The generated `shimboot_nixos.bin` image successfully boots on a `dedede` device. The custom `initramfs` runs and the `Shimboot OS Selector` correctly identifies the `nixos on /dev/sda4` partition.
+ -   **Current Issue:** Selecting the `nixos` option results in a black screen and a reboot (likely a kernel panic). The root cause was identified: the `rootfs` was built with symlinks pointing to `/nix/store` paths that don't exist within the `rootfs` itself. The `init` process fails because it cannot find essential binaries like `/sbin/init`.
+ -   **Next Steps:** Re-evaluate the `rootfs` creation process. The current plan is to abandon the symlink-based `buildEnv` approach and instead construct a `rootfs` that contains the actual files from the Nix store, not just pointers to them. This will likely involve using a different Nix function or manually copying store paths into the image during the build process.
 -   [ ] **Declarative Artifacts (Future Goal):** The manual extraction and patching steps in `build-final-image.sh` should eventually be moved into pure, hashed Nix derivations.
 
 ### How to Build (Current WIP State)
