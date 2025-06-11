@@ -1,5 +1,5 @@
 /bootloader/bin/cryptsetup
-/data/kernel.bin
+/data/
 
 /result
 /result-*
