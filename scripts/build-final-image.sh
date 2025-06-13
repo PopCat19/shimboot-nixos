@@ -268,7 +268,7 @@ sudo dd if="$KERNEL_FILE" of="${IMAGE_LOOP}p2" bs=1M oflag=sync status=progress
 print_debug "Formatting BOOT partition..."
 sudo mkfs.ext2 -L BOOT "${IMAGE_LOOP}p3" >/dev/null
 print_debug "Formatting ROOTFS partition..."
-sudo mkfs.ext4 -L ROOTFS -O ^metadata_csum,^64bit "${IMAGE_LOOP}p4" >/dev/null
+sudo mkfs.ext4 -L ROOTFS -O ^has_journal,^extent,^huge_file,^flex_bg,^metadata_csum,^64bit,^dir_nlink "${IMAGE_LOOP}p4" >/dev/null
 
 print_info "Copying bootloader..."
 BOOTLOADER_MOUNT="/tmp/shim_bootloader"
