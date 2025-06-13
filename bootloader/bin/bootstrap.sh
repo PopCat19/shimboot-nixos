@@ -12,6 +12,12 @@
 #set -x
 set +x
 
+# Force-mount the essential API filesystems to resolve race conditions.
+# The kernel might not have them ready when this script starts.
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+
 rescue_mode=""
 
 invoke_terminal() {
@@ -277,7 +283,7 @@ get_donor_selection() {
 exec_init() {
   if [ "$rescue_mode" = "1" ]; then
     echo "entering a rescue shell instead of starting init"
-    echo "once you are done fixing whatever is broken, run 'exec /init' or 'exec /sbin/init' to continue booting the system normally"
+    echo "once you are done fixing whatever is broken, run 'exec /sbin/init' to continue booting the system normally"
     
     if [ -f "/bin/bash" ]; then
       exec /bin/bash < "$TTY1" >> "$TTY1" 2>&1
@@ -285,32 +291,9 @@ exec_init() {
       exec /bin/sh < "$TTY1" >> "$TTY1" 2>&1
     fi
   else
-    # Try NixOS init first, then fall back to traditional init
-    if [ -f "/init" ]; then
-      exec /init < "$TTY1" >> "$TTY1" 2>&1
-    elif [ -f "/sbin/init" ]; then
-      exec /sbin/init < "$TTY1" >> "$TTY1" 2>&1
-    else
-      echo "No init found. Dropping to shell."
-      exec /bin/sh < "$TTY1" >> "$TTY1" 2>&1
-    fi
+    exec /sbin/init < "$TTY1" >> "$TTY1" 2>&1
   fi
 }
-
-# exec_init() {
-#   if [ "$rescue_mode" = "1" ]; then
-#     echo "entering a rescue shell instead of starting init"
-#     echo "once you are done fixing whatever is broken, run 'exec /sbin/init' to continue booting the system normally"
-#     
-#     if [ -f "/bin/bash" ]; then
-#       exec /bin/bash < "$TTY1" >> "$TTY1" 2>&1
-#     else
-#       exec /bin/sh < "$TTY1" >> "$TTY1" 2>&1
-#     fi
-#   else
-#     exec /lib/systemd/systemd --system --log-level=debug --log-target=kmsg --show-status=yes < "$TTY1" >> "$TTY1" 2>&1
-#   fi
-# }
 
 boot_target() {
   local target="$1"
