@@ -21,7 +21,7 @@
   boot.loader.initScript.enable = true;
 
   # Force the kernel console to tty1, where getty is running
-  boot.kernelParams = [ "console=tty1" ];
+  boot.kernelParams = [ "quiet" ];
 
   # Create traditional Unix filesystem layout
   system.activationScripts.traditionalLayout = ''

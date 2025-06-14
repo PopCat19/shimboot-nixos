@@ -291,7 +291,8 @@ exec_init() {
       exec /bin/sh < "$TTY1" >> "$TTY1" 2>&1
     fi
   else
-    exec /sbin/init < "$TTY1" >> "$TTY1" 2>&1
+    exec /sbin/init # Let it manage its own I/O
+    # exec /sbin/init < "$TTY1" >> "$TTY1" 2>&1
   fi
 }
 
