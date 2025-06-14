@@ -93,17 +93,29 @@ print_info "Working directory: $TMP_DIR"
 print_debug "Temp directory permissions: $(ls -ld "$TMP_DIR")"
 
 IMAGE_LOOP=""
+SHIM_LOOP=""
+NIXOS_LOOP=""
 
 cleanup_all() {
   print_info "Cleaning up..."
   cleanup_sudo
 
-  for mount_point in "/tmp/new_rootfs" "/tmp/shim_bootloader"; do
+  for mount_point in "/tmp/new_rootfs" "/tmp/shim_bootloader" "/tmp/shim_rootfs_mount"* "/tmp/nixos_source_mount"; do
     if mountpoint -q "$mount_point" 2>/dev/null; then
       print_debug "Unmounting $mount_point..."
       sudo umount "$mount_point" 2>/dev/null || true
     fi
   done
+
+  if [ -n "$NIXOS_LOOP" ]; then
+    print_debug "Detaching NixOS source loop device $NIXOS_LOOP..."
+    sudo losetup -d "$NIXOS_LOOP" 2>/dev/null || true
+  fi
+
+  if [ -n "$SHIM_LOOP" ]; then
+    print_debug "Detaching shim loop device $SHIM_LOOP..."
+    sudo losetup -d "$SHIM_LOOP" 2>/dev/null || true
+  fi
 
   if [ -n "$IMAGE_LOOP" ]; then
     print_debug "Detaching loop device $IMAGE_LOOP..."
@@ -112,7 +124,7 @@ cleanup_all() {
 
   if [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ]; then
     print_debug "Removing temp directory $TMP_DIR..."
-    rm -rf "$TMP_DIR" 2>/dev/null || true
+    sudo rm -rf "$TMP_DIR" 2>/dev/null || true
   fi
 
   print_debug "Cleanup complete"
@@ -120,24 +132,63 @@ cleanup_all() {
 
 trap 'cleanup_all' EXIT
 
-# --- Step 1: The Pure Build (Tarball Method) ---
-print_info "Building NixOS rootfs tarball..."
-print_debug "Running: nixos-generate -f docker -c ./configuration.nix --system x86_64-linux"
+# --- Step 1: The Pure Build (Raw Disk Image Method) ---
+print_info "Building NixOS raw disk image..."
+print_debug "Running: nixos-generate -f raw -c ./configuration.nix --system x86_64-linux"
 
-NIXOS_TARBALL=$(nixos-generate -f docker -c ./configuration.nix --system x86_64-linux)
-print_debug "nixos-generate returned: $NIXOS_TARBALL"
+NIXOS_IMAGE=$(nixos-generate -f raw -c ./configuration.nix --system x86_64-linux)
+print_debug "nixos-generate returned: $NIXOS_IMAGE"
 
-if [ ! -f "$NIXOS_TARBALL" ]; then
-  print_error "Failed to find generated NixOS tarball at $NIXOS_TARBALL"
+if [ ! -f "$NIXOS_IMAGE" ]; then
+  print_error "Failed to find generated NixOS image at $NIXOS_IMAGE"
   exit 1
 fi
-print_info "NixOS tarball generated at $NIXOS_TARBALL"
-print_debug "Tarball size: $(ls -lh "$NIXOS_TARBALL")"
+print_info "NixOS raw image generated at $NIXOS_IMAGE"
+print_debug "Image size: $(ls -lh "$NIXOS_IMAGE")"
 
 # --- Step 2: The Impure Harvest ---
-print_info "Harvesting kernel and initramfs from shim..."
-print_info "Extracting kernel partition (KERN-A)..."
+print_info "Harvesting kernel, initramfs, and modules from shim..."
 
+# --- Step 2a: Harvest Kernel Modules ---
+print_info "Mounting original ChromeOS rootfs to harvest modules..."
+SHIM_LOOP=$(sudo losetup -f)
+print_debug "Assigned shim loop device: $SHIM_LOOP"
+sudo losetup -P "$SHIM_LOOP" "$SHIM_FILE"
+
+# The ChromeOS rootfs is usually partition 3 (ROOT-A)
+SHIM_ROOTFS_PART="${SHIM_LOOP}p3"
+if [ ! -b "$SHIM_ROOTFS_PART" ]; then
+  print_error "Could not find shim rootfs partition at $SHIM_ROOTFS_PART"
+  exit 1
+fi
+
+SHIM_ROOTFS_MOUNT=$(mktemp -d -p /tmp -t shim_rootfs_mount.XXXXXX)
+print_debug "Mounting shim rootfs partition: $SHIM_ROOTFS_PART -> $SHIM_ROOTFS_MOUNT"
+sudo mount -o ro "$SHIM_ROOTFS_PART" "$SHIM_ROOTFS_MOUNT"
+
+# Find the kernel module directory dynamically
+KMOD_DIR_NAME=$(sudo ls "$SHIM_ROOTFS_MOUNT/lib/modules/" | head -n 1)
+KMOD_SRC_PATH="$SHIM_ROOTFS_MOUNT/lib/modules/$KMOD_DIR_NAME"
+KMOD_DEST_PATH="$TMP_DIR/kernel_modules"
+
+print_debug "Looking for modules in $KMOD_SRC_PATH"
+if [ -d "$KMOD_SRC_PATH" ]; then
+  print_info "Found modules for kernel $KMOD_DIR_NAME, copying..."
+  mkdir -p "$KMOD_DEST_PATH"
+  sudo cp -ar "$KMOD_SRC_PATH" "$KMOD_DEST_PATH/"
+  print_debug "Modules harvested successfully to $KMOD_DEST_PATH"
+else
+  print_error "Could not find kernel module directory in shim rootfs!"
+  sudo ls -la "$SHIM_ROOTFS_MOUNT/lib/modules/"
+  exit 1
+fi
+
+sudo umount "$SHIM_ROOTFS_MOUNT"
+sudo losetup -d "$SHIM_LOOP"
+SHIM_LOOP="" # Clear variable after use
+
+# --- Step 2b: Harvest Kernel & Initramfs ---
+print_info "Extracting kernel partition (KERN-A)..."
 print_debug "Running: sudo cgpt show -i 2 \"$SHIM_FILE\""
 cgpt_output=$(sudo cgpt show -i 2 "$SHIM_FILE")
 print_debug "cgpt output:"
@@ -152,30 +203,22 @@ print_debug "Extracting kernel with dd..."
 sudo dd if="$SHIM_FILE" of="$KERNEL_FILE" bs=512 skip="$part_start" count="$part_size" status=progress
 
 print_debug "Fixing ownership of $KERNEL_FILE..."
-print_debug "Current file ownership: $(ls -l "$KERNEL_FILE")"
-print_debug "Target ownership: $(id -u):$(id -g)"
 sudo chown "$(id -u):$(id -g)" "$KERNEL_FILE"
-print_debug "New file ownership: $(ls -l "$KERNEL_FILE")"
 
 print_info "Extracting initramfs from kernel..."
 print_debug "Stage 1: Finding gzip offset..."
 tmp_log_1=$(mktemp)
 binwalk -y gzip -l "$tmp_log_1" "$KERNEL_FILE"
-print_debug "binwalk gzip log:"
-cat "$tmp_log_1"
 offset=$(grep '"offset"' "$tmp_log_1" | awk -F': ' '{print $2}' | sed 's/,//')
 rm "$tmp_log_1"
 print_debug "Gzip offset: $offset"
 
 print_debug "Stage 1: Decompressing kernel..."
 dd if="$KERNEL_FILE" bs=1 skip="$offset" | zcat >"$TMP_DIR/decompressed_kernel.bin" || true
-print_debug "Decompressed kernel size: $(ls -lh "$TMP_DIR/decompressed_kernel.bin")"
 
 print_debug "Stage 2: Finding XZ offset..."
 tmp_log_2=$(mktemp)
 binwalk -l "$tmp_log_2" "$TMP_DIR/decompressed_kernel.bin"
-print_debug "binwalk XZ log:"
-cat "$tmp_log_2"
 xz_offset=$(cat "$tmp_log_2" | jq '.[0].Analysis.file_map[] | select(.description | contains("XZ compressed data")) | .offset')
 rm "$tmp_log_2"
 print_debug "XZ offset: $xz_offset"
@@ -183,8 +226,7 @@ print_debug "XZ offset: $xz_offset"
 mkdir -p "$TMP_DIR/initramfs_extracted"
 print_debug "Stage 2: Extracting XZ cpio archive..."
 dd if="$TMP_DIR/decompressed_kernel.bin" bs=1 skip="$xz_offset" | xz -d | cpio -id -D "$TMP_DIR/initramfs_extracted" || true
-print_debug "Initramfs extraction complete. Contents:"
-ls -la "$TMP_DIR/initramfs_extracted" | head -10
+print_debug "Initramfs extraction complete."
 
 print_info "Patching initramfs with shimboot bootloader..."
 original_init="$TMP_DIR/initramfs_extracted/init"
@@ -197,21 +239,48 @@ print_debug "Making bootloader scripts executable..."
 find "$TMP_DIR/initramfs_extracted/bin" -type f -exec chmod +x {} \;
 print_debug "Initramfs patching complete"
 
-# --- Step 3: The Final Assembly ---
+# --- Step 3: Mount and Extract NixOS Source ---
+print_info "Mounting source NixOS image to extract rootfs..."
+NIXOS_LOOP=$(sudo losetup -f)
+print_debug "Assigned NixOS source loop device: $NIXOS_LOOP"
+sudo losetup -P "$NIXOS_LOOP" "$NIXOS_IMAGE"
+
+# Find the main rootfs partition in the NixOS image (usually the largest partition)
+NIXOS_ROOTFS_PART="${NIXOS_LOOP}p1"
+if [ ! -b "$NIXOS_ROOTFS_PART" ]; then
+  # Try different partition numbers
+  for part_num in 2 3 4; do
+    if [ -b "${NIXOS_LOOP}p${part_num}" ]; then
+      NIXOS_ROOTFS_PART="${NIXOS_LOOP}p${part_num}"
+      break
+    fi
+  done
+fi
+
+if [ ! -b "$NIXOS_ROOTFS_PART" ]; then
+  print_error "Could not find NixOS rootfs partition"
+  sudo fdisk -l "$NIXOS_IMAGE"
+  exit 1
+fi
+
+NIXOS_SOURCE_MOUNT="/tmp/nixos_source_mount"
+sudo mkdir -p "$NIXOS_SOURCE_MOUNT"
+print_debug "Mounting NixOS source partition: $NIXOS_ROOTFS_PART -> $NIXOS_SOURCE_MOUNT"
+sudo mount -o ro "$NIXOS_ROOTFS_PART" "$NIXOS_SOURCE_MOUNT"
+
+# --- Step 4: The Final Assembly ---
 print_info "Assembling the final disk image..."
 OUTPUT_PATH="$PROJECT_ROOT/shimboot_nixos.bin"
 print_debug "Output path: $OUTPUT_PATH"
 
-print_debug "Estimating required rootfs size..."
-COMPRESSED_SIZE_MB=$(du -m "$NIXOS_TARBALL" | cut -f 1)
-# Estimate uncompressed size as 8x compressed size, plus some buffer.
-ROOTFS_SIZE_MB=$((COMPRESSED_SIZE_MB * 8))
-ROOTFS_PART_SIZE_MB=$((ROOTFS_SIZE_MB * 12 / 10 + 200))
+print_debug "Estimating required rootfs size from source NixOS image..."
+NIXOS_USED_SIZE_KB=$(sudo du -s "$NIXOS_SOURCE_MOUNT" | cut -f1)
+NIXOS_USED_SIZE_MB=$((NIXOS_USED_SIZE_KB / 1024))
+ROOTFS_PART_SIZE_MB=$((NIXOS_USED_SIZE_MB * 13 / 10 + 500)) # 30% overhead + 500MB
 BOOTLOADER_PART_SIZE_MB=32
 TOTAL_SIZE=$((1 + 32 + BOOTLOADER_PART_SIZE_MB + ROOTFS_PART_SIZE_MB))
 
-print_debug "Compressed tarball size: ${COMPRESSED_SIZE_MB}MB"
-print_debug "Estimated uncompressed rootfs size: ${ROOTFS_SIZE_MB}MB"
+print_debug "NixOS used space: ${NIXOS_USED_SIZE_MB}MB"
 print_debug "Final rootfs partition size: ${ROOTFS_PART_SIZE_MB}MB"
 print_debug "Bootloader partition size: ${BOOTLOADER_PART_SIZE_MB}MB"
 print_debug "Total image size: ${TOTAL_SIZE}MB"
@@ -219,10 +288,8 @@ print_debug "Total image size: ${TOTAL_SIZE}MB"
 print_info "Creating ${TOTAL_SIZE}MB disk image"
 rm -f "$OUTPUT_PATH"
 fallocate -l "${TOTAL_SIZE}M" "$OUTPUT_PATH"
-print_debug "Disk image created: $(ls -lh "$OUTPUT_PATH")"
 
 print_info "Partitioning disk image"
-print_debug "Running fdisk to create partition table..."
 (
   echo g
   echo n
@@ -244,7 +311,6 @@ print_debug "Running fdisk to create partition table..."
   echo w
 ) | sudo fdisk "$OUTPUT_PATH" >/dev/null
 
-print_debug "Setting partition attributes with cgpt..."
 sudo cgpt add -i 1 -t data -l "STATE" "$OUTPUT_PATH"
 sudo cgpt add -i 2 -t kernel -l "kernel" -S 1 -T 5 -P 10 "$OUTPUT_PATH"
 sudo cgpt add -i 3 -t rootfs -l "BOOT" "$OUTPUT_PATH"
@@ -257,47 +323,84 @@ print_info "Creating loop device for final image"
 IMAGE_LOOP=$(sudo losetup -f)
 print_debug "Assigned final image loop device: $IMAGE_LOOP"
 sudo losetup -P "$IMAGE_LOOP" "$OUTPUT_PATH"
-print_debug "Final image partitions:"
-ls -la "${IMAGE_LOOP}"* || true
 
 print_info "Formatting partitions"
-print_debug "Formatting STATE partition..."
 sudo mkfs.ext4 -L STATE "${IMAGE_LOOP}p1" >/dev/null
-print_debug "Copying kernel to KERN-A partition..."
 sudo dd if="$KERNEL_FILE" of="${IMAGE_LOOP}p2" bs=1M oflag=sync status=progress
-print_debug "Formatting BOOT partition..."
 sudo mkfs.ext2 -L BOOT "${IMAGE_LOOP}p3" >/dev/null
-print_debug "Formatting ROOTFS partition..."
 sudo mkfs.ext4 -L ROOTFS -O ^has_journal,^extent,^huge_file,^flex_bg,^metadata_csum,^64bit,^dir_nlink "${IMAGE_LOOP}p4" >/dev/null
 
 print_info "Copying bootloader..."
 BOOTLOADER_MOUNT="/tmp/shim_bootloader"
 sudo mkdir -p "$BOOTLOADER_MOUNT"
-print_debug "Mounting bootloader partition: ${IMAGE_LOOP}p3 -> $BOOTLOADER_MOUNT"
 sudo mount "${IMAGE_LOOP}p3" "$BOOTLOADER_MOUNT"
-print_debug "Copying initramfs contents to bootloader partition..."
 sudo cp -ar "$TMP_DIR/initramfs_extracted"/* "$BOOTLOADER_MOUNT/"
-print_debug "Bootloader partition contents:"
-sudo ls -la "$BOOTLOADER_MOUNT" | head -10
 sudo umount "$BOOTLOADER_MOUNT"
 
 print_info "Copying NixOS rootfs... (this may take a while)"
 ROOTFS_MOUNT="/tmp/new_rootfs"
 sudo mkdir -p "$ROOTFS_MOUNT"
-print_debug "Mounting rootfs partition: ${IMAGE_LOOP}p4 -> $ROOTFS_MOUNT"
 sudo mount "${IMAGE_LOOP}p4" "$ROOTFS_MOUNT"
-print_debug "Extracting rootfs tarball to partition..."
-sudo tar -xJf "$NIXOS_TARBALL" -C "$ROOTFS_MOUNT"
-print_debug "Rootfs extraction complete"
+print_debug "Copying rootfs from source image to partition..."
+sudo cp -ar "$NIXOS_SOURCE_MOUNT"/* "$ROOTFS_MOUNT/"
+print_debug "Rootfs copy complete"
+
+print_info "Creating systemd init symlink..."
+# Find the systemd binary directly, this is much more reliable
+SYSTEMD_BINARY_PATH=$(sudo find "${ROOTFS_MOUNT}/nix/store" -path "*/lib/systemd/systemd" -type f | head -n 1)
+
+if [ -z "$SYSTEMD_BINARY_PATH" ]; then
+  # Fallback to checking bin/systemd for some older or minimal packages
+  SYSTEMD_BINARY_PATH=$(sudo find "${ROOTFS_MOUNT}/nix/store" -path "*/bin/systemd" -type f | head -n 1)
+fi
+
+if [ -n "$SYSTEMD_BINARY_PATH" ]; then
+  # The path returned by find is absolute on the host. The symlink target must be absolute inside the new rootfs.
+  SYMLINK_TARGET=${SYSTEMD_BINARY_PATH#"$ROOTFS_MOUNT"}
+
+  print_debug "Found systemd binary at: $SYSTEMD_BINARY_PATH"
+  print_debug "Creating symlink /init -> $SYMLINK_TARGET"
+  sudo ln -sf "$SYMLINK_TARGET" "${ROOTFS_MOUNT}/init"
+else
+  print_error "Could not find systemd binary in the Nix store!"
+  print_debug "Dumping directory listing for nix/store to debug..."
+  sudo ls -l "${ROOTFS_MOUNT}/nix/store" >/tmp/nix_store_listing.txt
+  print_debug "Nix store listing saved to /tmp/nix_store_listing.txt"
+  exit 1
+fi
+
+print_info "Injecting harvested kernel modules into new rootfs..."
+if [ -d "$TMP_DIR/kernel_modules" ]; then
+  sudo mkdir -p "${ROOTFS_MOUNT}/lib/modules"
+  sudo cp -ar "$TMP_DIR/kernel_modules"/* "${ROOTFS_MOUNT}/lib/modules/"
+  print_debug "Modules copied to ${ROOTFS_MOUNT}/lib/modules/"
+else
+  print_error "Harvested kernel modules not found in temp directory. Skipping."
+fi
+
 print_debug "Manually creating traditional symlinks..."
 sudo mkdir -p "${ROOTFS_MOUNT}/sbin" "${ROOTFS_MOUNT}/usr/sbin"
 sudo ln -sf /init "${ROOTFS_MOUNT}/sbin/init"
 sudo ln -sf /init "${ROOTFS_MOUNT}/usr/sbin/init"
+
+print_info "Resetting machine-id for golden image..."
+if [ -f "${ROOTFS_MOUNT}/etc/machine-id" ]; then
+    sudo rm -f "${ROOTFS_MOUNT}/etc/machine-id"
+    print_debug "Removed existing machine-id."
+fi
+# Create an empty file to ensure it's generated on first boot
+sudo touch "${ROOTFS_MOUNT}/etc/machine-id"
+print_debug "Ensured /etc/machine-id is ready for first-boot generation."
+
+# Unmount the source NixOS image
+sudo umount "$NIXOS_SOURCE_MOUNT"
+sudo losetup -d "$NIXOS_LOOP"
+NIXOS_LOOP=""
+
 sudo umount "$ROOTFS_MOUNT"
 
 print_debug "Fixing ownership of output file..."
 sudo chown "$(id -u):$(id -g)" "$OUTPUT_PATH"
-print_debug "Final image ownership: $(ls -l "$OUTPUT_PATH")"
 
 print_info "All done! Your shimboot NixOS image is ready at: $OUTPUT_PATH"
 print_debug "Final image size: $(ls -lh "$OUTPUT_PATH")"
