@@ -58,16 +58,18 @@ print_debug "Groups: $(id -Gn)"
 
 PROJECT_ROOT=$(pwd)
 SHIM_FILE="$PROJECT_ROOT/data/shim.bin"
+RECOVERY_FILE="$PROJECT_ROOT/data/recovery.bin"  # <-- NEW: Recovery image
 KERNEL_FILE="$PROJECT_ROOT/data/kernel.bin"
 BOOTLOADER_DIR="$PROJECT_ROOT/bootloader"
 
 print_debug "Project root: $PROJECT_ROOT"
 print_debug "Shim file: $SHIM_FILE"
+print_debug "Recovery file: $RECOVERY_FILE"  # <-- NEW
 print_debug "Kernel file: $KERNEL_FILE"
 print_debug "Bootloader dir: $BOOTLOADER_DIR"
 
 print_info "Checking prerequisites..."
-for cmd in nix cgpt binwalk nixos-generate jq hexdump strings fdisk tar; do
+for cmd in nix cgpt binwalk nixos-generate jq hexdump strings fdisk tar gunzip; do
   if command -v $cmd >/dev/null; then
     print_debug "✓ $cmd found at $(command -v $cmd)"
   else
@@ -76,6 +78,7 @@ for cmd in nix cgpt binwalk nixos-generate jq hexdump strings fdisk tar; do
   fi
 done
 
+# Check for required files
 for file in "$SHIM_FILE" "$BOOTLOADER_DIR"; do
   if [ -e "$file" ]; then
     print_debug "✓ $file exists"
@@ -84,6 +87,16 @@ for file in "$SHIM_FILE" "$BOOTLOADER_DIR"; do
     exit 1
   fi
 done
+
+# Check for recovery file (optional but recommended)
+if [ -e "$RECOVERY_FILE" ]; then
+  print_debug "✓ $RECOVERY_FILE exists - will harvest additional drivers"
+  USE_RECOVERY=true
+else
+  print_debug "⚠ $RECOVERY_FILE not found - skipping recovery driver harvest"
+  print_debug "  Consider downloading a recovery image for better hardware support"
+  USE_RECOVERY=false
+fi
 
 check_sudo
 keep_sudo_alive
@@ -94,13 +107,14 @@ print_debug "Temp directory permissions: $(ls -ld "$TMP_DIR")"
 
 IMAGE_LOOP=""
 SHIM_LOOP=""
+RECOVERY_LOOP=""  # <-- NEW
 NIXOS_LOOP=""
 
 cleanup_all() {
   print_info "Cleaning up..."
   cleanup_sudo
 
-  for mount_point in "/tmp/new_rootfs" "/tmp/shim_bootloader" "/tmp/shim_rootfs_mount"* "/tmp/nixos_source_mount"; do
+  for mount_point in "/tmp/new_rootfs" "/tmp/shim_bootloader" "/tmp/shim_rootfs_mount"* "/tmp/recovery_rootfs_mount"* "/tmp/nixos_source_mount"; do
     if mountpoint -q "$mount_point" 2>/dev/null; then
       print_debug "Unmounting $mount_point..."
       sudo umount "$mount_point" 2>/dev/null || true
@@ -110,6 +124,11 @@ cleanup_all() {
   if [ -n "$NIXOS_LOOP" ]; then
     print_debug "Detaching NixOS source loop device $NIXOS_LOOP..."
     sudo losetup -d "$NIXOS_LOOP" 2>/dev/null || true
+  fi
+
+  if [ -n "$RECOVERY_LOOP" ]; then  # <-- NEW
+    print_debug "Detaching recovery loop device $RECOVERY_LOOP..."
+    sudo losetup -d "$RECOVERY_LOOP" 2>/dev/null || true
   fi
 
   if [ -n "$SHIM_LOOP" ]; then
@@ -149,7 +168,7 @@ print_debug "Image size: $(ls -lh "$NIXOS_IMAGE")"
 # --- Step 2: The Impure Harvest ---
 print_info "Harvesting kernel, initramfs, and modules from shim..."
 
-# --- Step 2a: Harvest Kernel Modules ---
+# --- Step 2a: Harvest Kernel Modules from Shim ---
 print_info "Mounting original ChromeOS rootfs to harvest modules..."
 SHIM_LOOP=$(sudo losetup -f)
 print_debug "Assigned shim loop device: $SHIM_LOOP"
@@ -176,18 +195,74 @@ if [ -d "$KMOD_SRC_PATH" ]; then
   print_info "Found modules for kernel $KMOD_DIR_NAME, copying..."
   mkdir -p "$KMOD_DEST_PATH"
   sudo cp -ar "$KMOD_SRC_PATH" "$KMOD_DEST_PATH/"
-  print_debug "Modules harvested successfully to $KMOD_DEST_PATH"
+  print_debug "Shim modules harvested successfully to $KMOD_DEST_PATH"
 else
   print_error "Could not find kernel module directory in shim rootfs!"
   sudo ls -la "$SHIM_ROOTFS_MOUNT/lib/modules/"
   exit 1
 fi
 
+# Harvest firmware from shim
+print_info "Harvesting firmware from shim..."
+FIRMWARE_DEST_PATH="$TMP_DIR/firmware"
+mkdir -p "$FIRMWARE_DEST_PATH"
+if [ -d "$SHIM_ROOTFS_MOUNT/lib/firmware" ]; then
+  sudo cp -ar "$SHIM_ROOTFS_MOUNT/lib/firmware"/* "$FIRMWARE_DEST_PATH/" 2>/dev/null || true
+  print_debug "Shim firmware copied to $FIRMWARE_DEST_PATH"
+fi
+
 sudo umount "$SHIM_ROOTFS_MOUNT"
 sudo losetup -d "$SHIM_LOOP"
 SHIM_LOOP="" # Clear variable after use
 
-# --- Step 2b: Harvest Kernel & Initramfs ---
+# --- Step 2b: Harvest Additional Drivers from Recovery Image ---
+if [ "$USE_RECOVERY" = true ]; then
+  print_info "Mounting recovery image to harvest additional drivers..."
+  RECOVERY_LOOP=$(sudo losetup -f)
+  print_debug "Assigned recovery loop device: $RECOVERY_LOOP"
+  sudo losetup -P "$RECOVERY_LOOP" "$RECOVERY_FILE"
+
+  # Recovery rootfs is usually partition 3 (ROOT-A)
+  RECOVERY_ROOTFS_PART="${RECOVERY_LOOP}p3"
+  if [ ! -b "$RECOVERY_ROOTFS_PART" ]; then
+    print_error "Could not find recovery rootfs partition at $RECOVERY_ROOTFS_PART"
+    exit 1
+  fi
+
+  RECOVERY_ROOTFS_MOUNT=$(mktemp -d -p /tmp -t recovery_rootfs_mount.XXXXXX)
+  print_debug "Mounting recovery rootfs partition: $RECOVERY_ROOTFS_PART -> $RECOVERY_ROOTFS_MOUNT"
+  sudo mount -o ro "$RECOVERY_ROOTFS_PART" "$RECOVERY_ROOTFS_MOUNT"
+
+  # Harvest additional firmware from recovery
+  print_info "Harvesting additional firmware from recovery image..."
+  if [ -d "$RECOVERY_ROOTFS_MOUNT/lib/firmware" ]; then
+    sudo cp -ar "$RECOVERY_ROOTFS_MOUNT/lib/firmware"/* "$FIRMWARE_DEST_PATH/" 2>/dev/null || true
+    print_debug "Recovery firmware merged into $FIRMWARE_DEST_PATH"
+  fi
+
+  # Harvest modprobe configurations
+  print_info "Harvesting modprobe configurations from recovery..."
+  MODPROBE_DEST_PATH="$TMP_DIR/modprobe.d"
+  mkdir -p "$MODPROBE_DEST_PATH"
+  
+  if [ -d "$RECOVERY_ROOTFS_MOUNT/lib/modprobe.d" ]; then
+    sudo cp -ar "$RECOVERY_ROOTFS_MOUNT/lib/modprobe.d"/* "$MODPROBE_DEST_PATH/" 2>/dev/null || true
+    print_debug "Recovery lib modprobe.d copied"
+  fi
+  
+  if [ -d "$RECOVERY_ROOTFS_MOUNT/etc/modprobe.d" ]; then
+    sudo cp -ar "$RECOVERY_ROOTFS_MOUNT/etc/modprobe.d"/* "$MODPROBE_DEST_PATH/" 2>/dev/null || true
+    print_debug "Recovery etc modprobe.d copied"
+  fi
+
+  sudo umount "$RECOVERY_ROOTFS_MOUNT"
+  sudo losetup -d "$RECOVERY_LOOP"
+  RECOVERY_LOOP="" # Clear variable after use
+else
+  print_debug "Skipping recovery image harvest - no recovery file available"
+fi
+
+# --- Step 2c: Harvest Kernel & Initramfs ---
 print_info "Extracting kernel partition (KERN-A)..."
 print_debug "Running: sudo cgpt show -i 2 \"$SHIM_FILE\""
 cgpt_output=$(sudo cgpt show -i 2 "$SHIM_FILE")
@@ -346,8 +421,13 @@ sudo cp -ar "$NIXOS_SOURCE_MOUNT"/* "$ROOTFS_MOUNT/"
 print_debug "Rootfs copy complete"
 
 print_info "Creating systemd init symlink..."
-# Find the systemd binary directly, this is much more reliable
-SYSTEMD_BINARY_PATH=$(sudo find "${ROOTFS_MOUNT}/nix/store" -path "*/lib/systemd/systemd" -type f | head -n 1)
+# Find the patched systemd specifically
+SYSTEMD_BINARY_PATH=$(sudo find "${ROOTFS_MOUNT}/nix/store" -path "*/343lc8igwgb1097j7ify1aplflwz7kly-systemd-257.5/lib/systemd/systemd" -type f)
+
+if [ -z "$SYSTEMD_BINARY_PATH" ]; then
+  # Fallback to any non-minimal systemd
+  SYSTEMD_BINARY_PATH=$(sudo find "${ROOTFS_MOUNT}/nix/store" -path "*/lib/systemd/systemd" -type f | grep -v minimal | head -n 1)
+fi
 
 if [ -z "$SYSTEMD_BINARY_PATH" ]; then
   # Fallback to checking bin/systemd for some older or minimal packages
@@ -374,8 +454,44 @@ if [ -d "$TMP_DIR/kernel_modules" ]; then
   sudo mkdir -p "${ROOTFS_MOUNT}/lib/modules"
   sudo cp -ar "$TMP_DIR/kernel_modules"/* "${ROOTFS_MOUNT}/lib/modules/"
   print_debug "Modules copied to ${ROOTFS_MOUNT}/lib/modules/"
+  
+  # Decompress kernel modules if necessary - NixOS won't recognize compressed modules
+  print_info "Decompressing kernel modules if needed..."
+  compressed_files=$(sudo find "${ROOTFS_MOUNT}/lib/modules" -name '*.gz' 2>/dev/null || true)
+  if [ -n "$compressed_files" ]; then
+    print_debug "Found compressed modules, decompressing..."
+    echo "$compressed_files" | sudo xargs gunzip
+    
+    # Rebuild module dependencies
+    for kernel_dir in "${ROOTFS_MOUNT}/lib/modules/"*; do
+      if [ -d "$kernel_dir" ]; then
+        version="$(basename "$kernel_dir")"
+        print_debug "Rebuilding module dependencies for kernel $version"
+        sudo chroot "${ROOTFS_MOUNT}" depmod "$version" 2>/dev/null || true
+      fi
+    done
+  fi
 else
   print_error "Harvested kernel modules not found in temp directory. Skipping."
+fi
+
+# NEW: Inject firmware
+print_info "Injecting harvested firmware into new rootfs..."
+if [ -d "$TMP_DIR/firmware" ]; then
+  sudo mkdir -p "${ROOTFS_MOUNT}/lib/firmware"
+  sudo cp -ar "$TMP_DIR/firmware"/* "${ROOTFS_MOUNT}/lib/firmware/" 2>/dev/null || true
+  print_debug "Firmware copied to ${ROOTFS_MOUNT}/lib/firmware/"
+else
+  print_debug "No harvested firmware found, skipping."
+fi
+
+# NEW: Inject modprobe configurations
+if [ "$USE_RECOVERY" = true ] && [ -d "$TMP_DIR/modprobe.d" ]; then
+  print_info "Injecting modprobe configurations into new rootfs..."
+  sudo mkdir -p "${ROOTFS_MOUNT}/lib/modprobe.d" "${ROOTFS_MOUNT}/etc/modprobe.d"
+  sudo cp -ar "$TMP_DIR/modprobe.d"/* "${ROOTFS_MOUNT}/lib/modprobe.d/" 2>/dev/null || true
+  sudo cp -ar "$TMP_DIR/modprobe.d"/* "${ROOTFS_MOUNT}/etc/modprobe.d/" 2>/dev/null || true
+  print_debug "Modprobe configurations copied"
 fi
 
 print_debug "Manually creating traditional symlinks..."
@@ -404,3 +520,9 @@ sudo chown "$(id -u):$(id -g)" "$OUTPUT_PATH"
 
 print_info "All done! Your shimboot NixOS image is ready at: $OUTPUT_PATH"
 print_debug "Final image size: $(ls -lh "$OUTPUT_PATH")"
+
+if [ "$USE_RECOVERY" = true ]; then
+  print_info "✓ Built with recovery image drivers - should have better hardware support"
+else
+  print_info "⚠ Built without recovery image - consider adding ./data/recovery.bin for better compatibility"
+fi

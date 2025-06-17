@@ -30,7 +30,7 @@
     ln -sf /init /usr/sbin/init
   '';
 
-  # Your patched systemd
+  # sustemd
   systemd.package = pkgs.systemd.overrideAttrs (old: {
     patches = (old.patches or []) ++
       [ ./nix/patches/systemd_unstable.patch ];
