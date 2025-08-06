@@ -1,3 +1,5 @@
+# moved to: https://github.com/PopCat19/nixos-shimboot
+
 # Chrome OS RMA Shim Bootloader
 
 Shimboot is a collection of scripts for patching a Chrome OS RMA shim to serve as a bootloader for a standard Linux distribution. It allows you to boot a full desktop Debian install on a Chromebook, without needing to unenroll it or modify the firmware.
